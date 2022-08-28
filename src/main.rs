@@ -40,21 +40,22 @@ fn main() -> Result<()> {
       .map(|x| x.unwrap())
       .collect();
 
-  for file in selections.into_iter() {
-    if std::path::Path::new(&[".", &file.name].join("/")).exists() {
-      println!("File already exists, skipping: {}", &file.name);
+  for remote_file in selections.into_iter() {
+    if std::path::Path::new(&[".", &remote_file.name].join("/")).exists() {
+      println!("{}: File already exists, skipping", &remote_file.name);
       continue;
     }
-    let download_url = file.download_url.clone().unwrap();
+    let download_url = remote_file.download_url.clone().unwrap();
     let res = client.get(download_url).send()?;
     match res.status().is_success() {
       true => {
         let bytes = res.bytes()?;
-        let mut file = std::fs::File::create(&file.name)?;
+        let mut file = std::fs::File::create(&remote_file.name)?;
         let mut content =  Cursor::new(bytes);
         std::io::copy(&mut content, &mut file)?;
+        println!("{}: Download successful ({:.2}KB)", remote_file.name, (file.metadata()?.len() as f64 / 1024.0));
       },
-      false => println!("Download failed: {}", file.name),
+      false => println!("{}: Download failed ({})", remote_file.name, res.status().to_string()),
     }
   }
 
@@ -66,7 +67,11 @@ fn get_contents(client: &Client, user: &String, repo: &String, path: &String) ->
   let res = client
     .get(url)
     .send()?;
-  // TODO: Error handling
+
+  if res.status().is_client_error() || res.status().is_server_error() {
+    panic!("{}", res.status().to_string());
+  }
+
   let contents = res.json()?;
 
   Ok(contents)
