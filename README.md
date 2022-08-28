@@ -2,6 +2,8 @@
 
 > Available on [crates.io](https://crates.io/crates/boilerfiles).
 
+<p align="center"><img src="./docs/demo.gif?raw=true"/></p>
+
 BoilerFiles is a CLI for downloading your boilerplate files from a public GitHub template repo.
 
 ## Features
