@@ -1,10 +1,11 @@
-use std::{io::{Cursor}, fs};
+use std::{io::Cursor, fs, time::Instant};
 
 use dialoguer::MultiSelect;
 use error_chain::error_chain;
 use home::home_dir;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use spinners::{Spinner, Spinners};
 
 error_chain! {
     foreign_links {
@@ -28,8 +29,7 @@ fn main() -> Result<()> {
     .user_agent("boilerfiles")
     .build()?;
 
-  let contents = get_contents(&client, &user.to_string(), &repo.to_string(), &path)?;
-  let files: Vec<Content> = contents.into_iter().filter(|content| content.download_url.is_some()).collect();
+  let files = fetch_files(&client, &user.to_string(), &repo.to_string(), &path)?;
   let file_names: Vec<String> = files.iter().map(|content| content.name.clone()).collect();
   let selections: Vec<&Content> = MultiSelect::new()
       .items(&file_names)
@@ -40,41 +40,68 @@ fn main() -> Result<()> {
       .map(|x| x.unwrap())
       .collect();
 
-  for remote_file in selections.into_iter() {
-    if std::path::Path::new(&[".", &remote_file.name].join("/")).exists() {
-      println!("{}: File already exists, skipping", &remote_file.name);
-      continue;
-    }
-    let download_url = remote_file.download_url.clone().unwrap();
-    let res = client.get(download_url).send()?;
-    match res.status().is_success() {
-      true => {
-        let bytes = res.bytes()?;
-        let mut file = std::fs::File::create(&remote_file.name)?;
-        let mut content =  Cursor::new(bytes);
-        std::io::copy(&mut content, &mut file)?;
-        println!("{}: Download successful ({:.2}KB)", remote_file.name, (file.metadata()?.len() as f64 / 1024.0));
-      },
-      false => println!("{}: Download failed ({})", remote_file.name, res.status().to_string()),
-    }
+  if selections.is_empty() {
+    println!("{}", "No files selected");
+    std::process::exit(0);
   }
 
-  Ok(())
+  let start = Instant::now();
+  for remote_file in selections.into_iter() {
+    download_file(remote_file, &client)?;
+  }
+  println!("\nDone after {}ms", start.elapsed().as_millis());
+
+  return Ok(());
 }
 
-fn get_contents(client: &Client, user: &String, repo: &String, path: &String) -> Result<Vec<Content>> {
+fn download_file(remote_file: &Content, client: &Client) -> Result<()> {
+  let start = Instant::now();
+  let mut sp = Spinner::new(
+      Spinners::Dots,
+      format!("{}: Downloading", remote_file.name).into(),
+  );
+  if std::path::Path::new(&[".", &remote_file.name].join("/")).exists() {
+    sp.stop_and_persist("-", format!("{}: File already exists, skipping", &remote_file.name));
+    return Ok(());
+  }
+  let download_url = remote_file.download_url.clone().unwrap();
+  let res = client.get(download_url).send()?;
+  match res.status().is_success() {
+    true => {
+      let bytes = res.bytes()?;
+      let mut file = std::fs::File::create(&remote_file.name)?;
+      let mut content =  Cursor::new(bytes);
+      std::io::copy(&mut content, &mut file)?;
+      sp.stop_and_persist("✔", format!("{}: Download successful ({:.2}KB, {}ms)", &remote_file.name, (file.metadata()?.len() as f64 / 1024.0), start.elapsed().as_millis()));
+    },
+    false => sp.stop_and_persist("✕", format!("{}: Download failed ({})", &remote_file.name, res.status().to_string())),
+  }
+
+  return Ok(());
+}
+
+fn fetch_files(client: &Client, user: &String, repo: &String, path: &String) -> Result<Vec<Content>> {
+  let mut sp = Spinner::new(
+      Spinners::Dots,
+      "Fetching repository".into(),
+  );
+
   let url = ["https://api.github.com/repos", user, repo, "contents", path].join("/");
   let res = client
     .get(url)
     .send()?;
 
-  if res.status().is_client_error() || res.status().is_server_error() {
-    panic!("{}", res.status().to_string());
+  if !res.status().is_success() {
+    sp.stop_and_persist("✕", format!("An error occurred ({})", res.status().to_string()));
+    std::process::exit(1);
   }
 
-  let contents = res.json()?;
+  let contents: Vec<Content> = res.json()?;
+  let files: Vec<Content> = contents.into_iter().filter(|content| content.download_url.is_some()).collect();
+  sp.stop_and_persist("✔", format!("Found {} files", files.len()).to_string());
+  println!();
 
-  Ok(contents)
+  return Ok(files);
 }
 
 fn get_config() -> Option<String> {
